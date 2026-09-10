@@ -143,6 +143,11 @@ h3{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute
       <input type="file" id="impFile" accept="application/json" hidden>
       <p class="small muted" id="stats" style="margin:10px 0 0"></p>
     </div>
+    <h3>Paste a workout</h3>
+    <div class="card">
+      <p class="small muted" style="margin:0 0 10px">Paste notes from your phone — one exercise per block, name on the first line, a set per line like <code>8x 50kg</code>, <code>18kg x 8 ff</code>. Warm-ups and cardio are skipped.</p>
+      <button class="btn sm sec" id="bulkBtn">Paste workout</button>
+    </div>
     <h3>Aliases</h3>
     <div class="card" id="aliases"></div>
     <h3>How to type</h3>
@@ -488,6 +493,56 @@ $('#expCsv').onclick=()=>{const rows=[['date','exercise','set','weight_kg','reps
 $('#impBtn').onclick=()=>$('#impFile').click();
 $('#impFile').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const d=JSON.parse(await f.text());if(!d.exercises||!d.sets)throw 0;if(!confirm(`Replace current data with ${d.exercises.length} exercises and ${d.sets.length} sets from this file?`))return;db=d;db.bw=db.bw||[];db.settings=db.settings||{};save();toast('Imported');render()}catch(err){toast('Not a Lift Log backup')}e.target.value=''};
 $('#wipe').onclick=()=>{if(!confirm('Delete everything? Export first if you want a backup.'))return;if(!confirm('Really delete all data?'))return;db={exercises:[],sets:[],bw:[],settings:{}};save();toast('Wiped');render()};
+
+/* --- bulk paste --- */
+function parseBulk(text){
+  const blocks=text.replace(/\r/g,'').split(/\n\s*\n/).map(b=>b.split('\n').map(l=>l.trim()).filter(Boolean)).filter(b=>b.length);
+  const entries=[],skipped=[];
+  for(const b of blocks){
+    let name=b[0].replace(/[:\-–]+\s*$/,'').trim();
+    if(/cardio|treadmill|bike|rowing|erg|run\b|walk/i.test(name)){skipped.push(b.join(' / '));continue}
+    const sets=[];let lastW=null;
+    for(const raw of b.slice(1)){
+      if(/warm|min\b|mins|minute|km\b/i.test(raw)){skipped.push(raw);continue}
+      let l=raw.toLowerCase().replace(/(\d)\s*,\s*(\d)(?=\s*kg)/g,'$1.$2').replace(/(\d)\s+kg/g,'$1kg').replace(/(\d)\s*[x×*]\s*(?=\d)/g,'$1 ').replace(/[x×*]\s*(?=\d)/g,' ').replace(/(\d)\s*[x×*]/g,'$1 ');
+      const nums=[];let note=l;
+      for(const m of l.matchAll(/(\d+(?:\.\d+)?)(kg)?/g)){nums.push({v:+m[1],kg:!!m[2]});note=note.replace(m[0],' ')}
+      note=note.replace(/\b(reps?|sets?)\b/g,' ').replace(/\s+/g,' ').trim()||null;
+      if(!nums.length){if(!sets.length&&!/\d/.test(raw)){name+=' '+raw;continue}skipped.push(raw);continue}
+      let w=null,r=null;
+      const kgI=nums.findIndex(n=>n.kg);
+      if(kgI>=0){w=nums[kgI].v;const other=nums.find((n,i)=>i!==kgI);r=other?other.v:null}
+      else if(nums.length>=2){w=nums[0].v;r=nums[1].v}
+      else{r=nums[0].v;w=lastW}
+      if(r==null){skipped.push(raw);continue}
+      lastW=w;sets.push({weightKg:w,reps:r,note});
+    }
+    if(!sets.length){skipped.push(b.join(' / '));continue}
+    const {exact,cands}=matchExercise(name);
+    const ex=exact||(cands.length===1?cands[0]:null);
+    const isBodyweight=ex?ex.isBodyweight:(sets.every(x=>x.weightKg==null)||BW_WORDS.test(norm(name)));
+    entries.push({name:ex?ex.name:titleCase(name),ex,isBodyweight,sets});
+  }
+  return{entries,skipped};
+}
+function openBulk(prefill=''){
+  sheet(`<h2>Paste a workout</h2>
+    <div class="field"><label>Date</label><input id="bkDate" type="date" value="${todayStr()}"></div>
+    <div class="field"><label>Workout</label><textarea id="bkText" rows="8" style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);font:14px/1.4 ui-monospace,Menlo,monospace;color:inherit">${esc(prefill)}</textarea></div>
+    <div id="bkPrev" class="small" style="margin:8px 0"></div>
+    <div class="row sb" style="margin-top:12px"><button class="link" id="bkCancel">Cancel</button><button class="btn sm" id="bkAdd" disabled>Add</button></div>`);
+  const upd=()=>{const {entries,skipped}=parseBulk($('#bkText').value);
+    $('#bkPrev').innerHTML=(entries.map(e=>`<div style="padding:4px 0;border-bottom:1px solid var(--line)"><b>${esc(e.name)}</b>${e.ex?'':' <span class="new" style="color:var(--accent)">new</span>'}${e.isBodyweight?' <span class="muted">bw</span>':''}<div class="muted num">${e.sets.map(s=>`${s.weightKg==null?'bw':fmtW(s.weightKg)}×${s.reps}${s.note?' '+esc(s.note):''}`).join(' · ')}</div></div>`).join('')||'<span class="muted">Nothing parsed yet.</span>')+(skipped.length?`<div class="muted" style="margin-top:6px">Skipped: ${skipped.map(esc).join(' · ')}</div>`:'');
+    $('#bkAdd').disabled=!entries.length;$('#bkAdd').textContent=`Add ${entries.reduce((a,e)=>a+e.sets.length,0)} sets`};
+  $('#bkText').addEventListener('input',upd);upd();
+  $('#bkCancel').onclick=closeSheet;
+  $('#bkAdd').onclick=()=>{const date=$('#bkDate').value||todayStr();const {entries}=parseBulk($('#bkText').value);const now=Date.now();let n=0;
+    entries.forEach((e,bi)=>{let ex=e.ex;if(!ex){ex={id:uid(),name:e.name,aliases:[norm(e.name)],isBodyweight:e.isBodyweight,createdAt:now};db.exercises.push(ex)}
+      const existing=db.sets.filter(s=>s.exerciseId===ex.id&&s.date===date).length;
+      e.sets.forEach((st,i)=>{db.sets.push({id:uid(),exerciseId:ex.id,date,setIndex:existing+i,weightKg:e.isBodyweight?(st.weightKg||null):st.weightKg,reps:st.reps,note:st.note,createdAt:now+bi*100+i});n++})});
+    save();closeSheet();toast(`Added ${n} sets`);show('log')};
+}
+$('#bulkBtn').onclick=()=>openBulk();
 
 /* --- boot --- */
 if(db.settings.currentExId&&db.settings.currentDate===todayStr()){currentEx=exById(db.settings.currentExId)||null;if(currentEx)$('#in').placeholder=`next set for ${currentEx.name.toLowerCase()} — just the number`}
