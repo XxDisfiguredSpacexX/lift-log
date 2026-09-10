@@ -85,6 +85,20 @@ select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8
 .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:8px}
 .stats b{display:block;font-size:18px;font-weight:600}
 svg.chart{width:100%;height:auto;display:block;margin:8px 0}
+.mrow{display:grid;grid-template-columns:86px 1fr 44px;gap:10px;align-items:center;padding:5px 0;font-size:14px}
+.mrow .bar{height:8px;background:var(--mono-bg);border-radius:4px;overflow:hidden}
+.mrow .bar i{display:block;height:100%;background:var(--accent);border-radius:4px}
+.mrow.met .bar i{background:var(--ok)}
+.mrow .n{text-align:right;font-weight:600}
+.mrow.met .n{color:var(--ok)}
+.dots{display:flex;gap:6px;align-items:flex-end}
+.dots span{display:flex;flex-direction:column;align-items:center;font-size:11px;color:var(--muted);gap:3px}
+.dots b{font-size:16px;color:var(--ink)}
+.dots span.now b{color:var(--accent)}
+.mchips{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 8px}
+.mchips .chip{padding:4px 10px}
+.mchips .chip.p{border-color:var(--accent);color:var(--accent);font-weight:600}
+.mchips .chip.s{border-color:var(--muted);color:var(--ink);border-style:dashed}
 table{width:100%;border-collapse:collapse;font-size:14px}
 th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line)}
 th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
@@ -116,6 +130,8 @@ h3{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute
     <div id="today"></div>
   </section>
   <section class="view" id="v-progress">
+    <div class="card" id="weekPanel"></div>
+    <h3>Exercise</h3>
     <select id="exSel"></select>
     <div class="seg" id="metricSeg">
       <button data-m="e1rm" class="on">Est. 1RM</button><button data-m="top">Top weight</button><button data-m="vol">Volume</button>
@@ -206,6 +222,30 @@ function matchExercise(raw){
   const cands=live.filter(e=>{const n=norm(e.name);if(n.startsWith(q)||(e.aliases||[]).some(a=>a.startsWith(q)))return true;return q.length>=4&&lev(n,q)<=2});
   return{exact:cands.length===1?cands[0]:null,cands,fuzzy:true};
 }
+const MUSCLES=['chest','back','shoulders','biceps','triceps','quads','hamstrings','glutes','calves','core'];
+const MIN_SETS=6, SESSIONS_TARGET=[3,4];
+function guessMuscles(name){
+  const n=' '+norm(name)+' ';const t=re=>re.test(n);
+  if(t(/skull|tricep|pushdown|push down|pull ?over|close grip|kickback/))return{primary:['triceps'],secondary:t(/close grip/)?['chest']:[]};
+  if(t(/leg curl|hamstring|nordic/))return{primary:['hamstrings'],secondary:[]};
+  if(t(/bicep|curl/))return{primary:['biceps'],secondary:[]};
+  if(t(/calf|calve/))return{primary:['calves'],secondary:[]};
+  if(t(/face pull|rear delt|reverse fly|lat raise|lateral|front raise|shoulder|ohp|overhead|z pres|military|arnold|delt/))return{primary:['shoulders'],secondary:t(/pres|ohp|overhead/)?['triceps']:[]};
+  if(t(/bench|chest|pec|fly|flye|push ?up|dip/))return{primary:['chest'],secondary:t(/incline/)?['triceps','shoulders']:['triceps']};
+  if(t(/pull ?up|chin|row|pulldown|pull down|lat |back|shrug/))return{primary:['back'],secondary:t(/shrug/)?[]:['biceps']};
+  if(t(/hip thrust|glute bridge|glute/))return{primary:['glutes'],secondary:['hamstrings']};
+  if(t(/deadlift|rdl|romanian|good morning|hyperextension|back extension/))return{primary:['hamstrings'],secondary:['glutes','back']};
+  if(t(/squat|leg pres|lunge|leg ext|split|step up|hack/))return{primary:['quads'],secondary:['glutes']};
+  if(t(/\bab|crunch|plank|core|leg raise|sit up|hollow/))return{primary:['core'],secondary:[]};
+  return{primary:[],secondary:[]};
+}
+function musclesOf(ex){if(!ex.primary&&!ex.secondary){const g=guessMuscles(ex.name);ex.primary=g.primary;ex.secondary=g.secondary}return{primary:ex.primary||[],secondary:ex.secondary||[]}}
+function weekStats(offset){
+  const [a,b]=weekBounds(offset);const sets=db.sets.filter(s=>s.date>=a&&s.date<=b);
+  const sessions=new Set(sets.map(s=>s.date)).size;const per={};for(const m of MUSCLES)per[m]=0;
+  for(const s of sets){const ex=exById(s.exerciseId);if(!ex)continue;const m=musclesOf(ex);for(const x of m.primary)per[x]+=1;for(const x of m.secondary)per[x]+=0.5}
+  return{sessions,per,range:[a,b]};
+}
 const BW_WORDS=/\b(pull ?up|chin ?up|dip|push ?up|muscle ?up|plank|inverted row|nordic)/;
 
 /* ---------- parser ---------- */
@@ -290,8 +330,8 @@ function sessionsFor(exId){
 function lastTop(ex){if(!ex)return null;const ss=sessionsFor(ex.id);return ss.length?ss[ss.length-1].top.weightKg:null}
 function bestOf(ss){let b=null;for(const s of ss)if(s.score!=null&&(!b||s.score>b.score))b=s;return b}
 function trend(ss){const v=ss.slice(-6).map(s=>s.score).filter(x=>x!=null);if(v.length<2)return'flat';const n=v.length,xm=(n-1)/2,ym=v.reduce((a,b)=>a+b)/n;let num=0,den=0;for(let i=0;i<n;i++){num+=(i-xm)*(v[i]-ym);den+=(i-xm)**2}const slope=num/den;const rel=slope/(ym||1)*(n-1);return rel>0.02?'up':rel<-0.02?'down':'flat'}
-const setsStr=ss=>{const w=ss[0].weightKg;const r=ss.map(s=>s.reps);const all=r.every(x=>x===r[0]);return `${fmtW(w)} × ${all?`${r.length}×${r[0]}`:r.join(', ')}`};
-const setsStrBW=ss=>{const r=ss.map(s=>s.reps);const w=ss[0].weightKg;return (w?`+${fmtW(w)} × `:'')+(r.every(x=>x===r[0])?`${r.length}×${r[0]}`:r.join(', '))};
+const setsStr=ss=>{const w=ss[0].weightKg;if(ss.some(s=>s.weightKg!==w))return ss.map(s=>`${fmtW(s.weightKg)}×${s.reps}`).join(', ');const r=ss.map(s=>s.reps);const all=r.every(x=>x===r[0]);return `${fmtW(w)} × ${all?`${r.length}×${r[0]}`:r.join(', ')}`};
+const setsStrBW=ss=>{const r=ss.map(s=>s.reps);const w=ss[0].weightKg;if(ss.some(s=>s.weightKg!==w))return ss.map(s=>`${s.weightKg?'+'+fmtW(s.weightKg)+'×':''}${s.reps}`).join(', ');return (w?`+${fmtW(w)} × `:'')+(r.every(x=>x===r[0])?`${r.length}×${r[0]}`:r.join(', '))};
 function describeSession(sess,ex){const ss=sess.sets;return ex&&ex.isBodyweight?setsStrBW(ss):setsStr(ss)}
 
 /* ---------- UI helpers ---------- */
@@ -379,7 +419,7 @@ function commit(){
   if(p.type==='bw'){db.bw=db.bw.filter(x=>x.date!==p.date);db.bw.push({id:uid(),date:p.date,kg:p.kg,createdAt:Date.now()});save();toast('Bodyweight logged');$('#in').value='';render();return}
   if(p.cands&&p.cands.length>1)return;
   let ex=p.ex;
-  if(!ex){ex={id:uid(),name:p.name,aliases:[norm(p.name)],isBodyweight:p.isBodyweight,createdAt:Date.now()};db.exercises.push(ex)}
+  if(!ex){ex={id:uid(),name:p.name,aliases:[norm(p.name)],isBodyweight:p.isBodyweight,createdAt:Date.now(),...guessMuscles(p.name)};db.exercises.push(ex)}
   else{const typed=norm($('#in').value.split(/\s+/).slice(0,$('#in').value.split(/\s+/).findIndex(t=>/^[+-]?\d/.test(t))).join(' '));if(typed&&typed!==norm(ex.name)&&!(ex.aliases||[]).includes(typed)){ex.aliases=ex.aliases||[];ex.aliases.push(typed)}}
   const pr=isPR(ex,p.weight,p.sets);
   const existing=db.sets.filter(s=>s.exerciseId===ex.id&&s.date===p.date).length;
@@ -411,7 +451,20 @@ let metric='e1rm',selEx=null;
 document.querySelectorAll('#metricSeg button').forEach(b=>b.onclick=()=>{metric=b.dataset.m;document.querySelectorAll('#metricSeg button').forEach(x=>x.classList.toggle('on',x===b));renderProgress()});
 $('#exSel').onchange=e=>{selEx=e.target.value;renderProgress()};
 function openExercise(id){selEx=id;show('progress')}
+function renderWeekPanel(){
+  const w=weekStats(0),prev=weekStats(1);
+  const hist=[3,2,1,0].map(o=>({o,n:weekStats(o).sessions}));
+  const sOk=w.sessions>=SESSIONS_TARGET[0];
+  const rows=MUSCLES.map(m=>({m,n:w.per[m],p:prev.per[m]})).filter(r=>r.n>0||r.p>0);
+  const untagged=db.exercises.filter(e=>!e.archived&&musclesOf(e).primary.length===0&&db.sets.some(s=>s.exerciseId===e.id&&s.date>=w.range[0]));
+  $('#weekPanel').innerHTML=`<div class="row sb"><div><span class="stat">Sessions this week</span><div class="big num" style="font-size:34px"><span class="${sOk?'up':''}">${w.sessions}</span><span class="muted" style="font-size:16px;font-weight:500"> of ${SESSIONS_TARGET[0]}–${SESSIONS_TARGET[1]}</span></div></div>
+    <div class="dots">${hist.map(h=>`<span class="${h.o===0?'now':''}"><b class="num">${h.n}</b>${h.o===0?'now':h.o+'w'}</span>`).join('')}</div></div>
+    <h3 style="margin-top:14px">Sets per muscle · min ${MIN_SETS}</h3>
+    ${rows.length?rows.map(r=>`<div class="mrow${r.n>=MIN_SETS?' met':''}"><span>${r.m}</span><div class="bar"><i style="width:${Math.min(100,r.n/MIN_SETS*100)}%"></i></div><span class="n num">${r.n%1?r.n.toFixed(1):r.n}<span class="muted small" style="font-weight:400"> /${r.p%1?r.p.toFixed(1):r.p}</span></span></div>`).join(''):'<span class="muted small">No sets this week yet.</span>'}
+    <p class="small muted" style="margin:8px 0 0">Primary muscle counts 1 set, secondary ½. Grey number is last week.${untagged.length?` <span class="down">Untagged: ${untagged.map(e=>esc(e.name)).join(', ')} — tag below.</span>`:''}</p>`;
+}
 function renderProgress(){
+  renderWeekPanel();
   const list=recentExercises();
   if(!selEx||!exById(selEx))selEx=list[0]?list[0].id:null;
   $('#exSel').innerHTML=list.map(e=>`<option value="${e.id}"${e.id===selEx?' selected':''}>${esc(e.name)}</option>`).join('')||'<option>No exercises yet</option>';
@@ -428,10 +481,16 @@ function renderProgress(){
   const others=db.exercises.filter(e=>e.id!==ex.id&&!e.archived);
   $('#exManage').innerHTML=`<div class="field"><label>Name</label><input id="mName" value="${esc(ex.name)}"></div>
     <div class="field"><label>Aliases (comma separated)</label><input id="mAl" value="${esc((ex.aliases||[]).join(', '))}"></div>
+    <div class="field"><label>Muscles — tap once for primary, twice for secondary</label><div class="mchips" id="mMus">${(()=>{const m=musclesOf(ex);return MUSCLES.map(x=>`<button type="button" class="chip ${m.primary.includes(x)?'p':m.secondary.includes(x)?'s':''}" data-m="${x}">${x}${m.primary.includes(x)?' ●':m.secondary.includes(x)?' ○':''}</button>`).join('')})()}</div></div>
     <div class="row sb" style="margin:8px 0"><label class="small"><input type="checkbox" id="mBW"${ex.isBodyweight?' checked':''}> Bodyweight exercise</label><button class="btn sm" id="mSave">Save</button></div>
     <div class="row sb" style="margin-top:12px"><select id="mMerge" style="flex:1"><option value="">Merge into…</option>${others.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select><button class="btn sm sec" id="mMergeBtn">Merge</button></div>
     <p class="small muted" style="margin:6px 0 0">Merging moves every set of <b>${esc(ex.name)}</b> into the chosen exercise and keeps its name as an alias.</p>
     <div style="margin-top:12px"><button class="link danger" id="mDel">Delete exercise and its ${db.sets.filter(s=>s.exerciseId===ex.id).length} sets</button></div>`;
+  document.querySelectorAll('#mMus .chip').forEach(c=>c.onclick=()=>{const m=musclesOf(ex);const x=c.dataset.m;
+    if(m.primary.includes(x)){ex.primary=m.primary.filter(y=>y!==x);ex.secondary=[...m.secondary,x]}
+    else if(m.secondary.includes(x)){ex.secondary=m.secondary.filter(y=>y!==x)}
+    else{ex.primary=[...m.primary,x]}
+    save();renderProgress()});
   $('#mSave').onclick=()=>{ex.name=titleCase($('#mName').value)||ex.name;ex.aliases=$('#mAl').value.split(',').map(a=>norm(a)).filter(Boolean);ex.isBodyweight=$('#mBW').checked;save();toast('Saved');renderProgress()};
   $('#mMergeBtn').onclick=()=>{const tid=$('#mMerge').value;if(!tid)return;const t=exById(tid);if(!confirm(`Merge ${ex.name} into ${t.name}?`))return;for(const s of db.sets)if(s.exerciseId===ex.id)s.exerciseId=tid;t.aliases=[...new Set([...(t.aliases||[]),norm(ex.name),...(ex.aliases||[])])];db.exercises=db.exercises.filter(e=>e.id!==ex.id);selEx=tid;save();toast('Merged');renderProgress()};
   $('#mDel').onclick=()=>{if(!confirm(`Delete ${ex.name} and all its sets? This can't be undone.`))return;db.sets=db.sets.filter(s=>s.exerciseId!==ex.id);db.exercises=db.exercises.filter(e=>e.id!==ex.id);selEx=null;save();toast('Deleted');renderProgress()};
@@ -537,7 +596,7 @@ function openBulk(prefill=''){
   $('#bkText').addEventListener('input',upd);upd();
   $('#bkCancel').onclick=closeSheet;
   $('#bkAdd').onclick=()=>{const date=$('#bkDate').value||todayStr();const {entries}=parseBulk($('#bkText').value);const now=Date.now();let n=0;
-    entries.forEach((e,bi)=>{let ex=e.ex;if(!ex){ex={id:uid(),name:e.name,aliases:[norm(e.name)],isBodyweight:e.isBodyweight,createdAt:now};db.exercises.push(ex)}
+    entries.forEach((e,bi)=>{let ex=e.ex;if(!ex){ex={id:uid(),name:e.name,aliases:[norm(e.name)],isBodyweight:e.isBodyweight,createdAt:now,...guessMuscles(e.name)};db.exercises.push(ex)}
       const existing=db.sets.filter(s=>s.exerciseId===ex.id&&s.date===date).length;
       e.sets.forEach((st,i)=>{db.sets.push({id:uid(),exerciseId:ex.id,date,setIndex:existing+i,weightKg:e.isBodyweight?(st.weightKg||null):st.weightKg,reps:st.reps,note:st.note,createdAt:now+bi*100+i});n++})});
     save();closeSheet();toast(`Added ${n} sets`);show('log')};
