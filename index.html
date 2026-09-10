@@ -225,8 +225,9 @@ function parse(text){
   const lastTok=toks[toks.length-1];
   if(toks.length>1&&/[a-z\/]/i.test(lastTok)&&!/^\d+(\.\d+)?(kg|r|reps?|s|sets?|x)$/i.test(lastTok)){const d=parseDate(lastTok);if(d){date=d;toks.pop()}}
   const fi=toks.findIndex(t=>/^[+-]?\d/.test(t));
-  if(fi===0)return{err:'Start with the exercise name'};
-  const name=fi<0?toks.join(' '):toks.slice(0,fi).join(' ');
+  let continued=false;
+  if(fi===0){if(!currentEx)return{err:'Start with the exercise name'};continued=true}
+  const name=continued?currentEx.name:(fi<0?toks.join(' '):toks.slice(0,fi).join(' '));
   let rest=fi<0?'':toks.slice(fi).join(' ').toLowerCase();
   rest=rest.replace(/(\d)\s*(kg|kgs|reps|rep|r|sets|set|s)\b/g,'$1').replace(/(?<=\d)x(?=[+\d])/g,' ').replace(/\b(x|for|at)\b|[×*@]/g,' ').replace(/\s*,\s*/g,',').replace(/\s+/g,' ').trim();
   const nums=[];
@@ -239,10 +240,14 @@ function parse(text){
   const isNew=!exact&&cands.length===0;
   const ex=exact;
   const bwGuess=ex?ex.isBodyweight:(pendingBW!==null?pendingBW:BW_WORDS.test(norm(name)));
-  const r={type:'set',name:ex?ex.name:titleCase(name),ex,isNew,cands:exact?[]:cands,date,note,isBodyweight:bwGuess,sets:[]};
+  const r={type:'set',name:ex?ex.name:titleCase(name),ex,isNew,cands:exact?[]:cands,date,note,isBodyweight:bwGuess,sets:[],continued};
+  if(ex)r.doneToday=db.sets.filter(x=>x.exerciseId===ex.id&&x.date===date).sort((a,b)=>a.createdAt-b.createdAt);
   if(!nums.length)return{...r,err:'weight and reps?'};
   let weight=null,i=0;
   if(bwGuess){ if(nums[0].rel){weight=(nums[0].rel==='-'?-1:1)*nums[0].v;i=1} }
+  else if(nums.length===1&&!nums[0].list&&!nums[0].rel&&r.doneToday&&r.doneToday.length&&r.doneToday.at(-1).weightKg!=null){
+    weight=r.doneToday.at(-1).weightKg;i=0;r.reusedWeight=true;
+  }
   else{
     const w=nums[0];i=1;
     if(w.list)return{...r,err:'weight first'};
@@ -262,6 +267,8 @@ function parse(text){
   return r;
 }
 let pendingBW=null;
+let currentEx=null;
+function setCurrent(ex){currentEx=ex;db.settings.currentExId=ex?ex.id:null;db.settings.currentDate=todayStr();save()}
 
 /* ---------- metrics ---------- */
 const e1rm=(w,r)=>w==null?null:w*(1+r/30);
@@ -310,7 +317,7 @@ function renderLog(){
   const t=todayStr();const by={};for(const s of db.sets)if(s.date===t)(by[s.exerciseId]=by[s.exerciseId]||[]).push(s);
   const groups=Object.entries(by).sort((x,y)=>Math.min(...x[1].map(s=>s.createdAt))-Math.min(...y[1].map(s=>s.createdAt)));
   $('#today').innerHTML=groups.length?groups.map(([id,ss])=>{const ex=exById(id);ss.sort((a,b)=>a.createdAt-b.createdAt);const best=Math.max(...ss.map(s=>e1rm(s.weightKg,s.reps)||0));const totalReps=ss.reduce((a,s)=>a+s.reps,0);
-    return`<div class="group"><h4><b>${esc(ex?ex.name:'?')}</b><span>${best?'e1RM '+best.toFixed(1):totalReps+' reps'}</span></h4>${ss.map(s=>`<div class="set" data-id="${s.id}"><span class="l num">${s.weightKg==null?'bw':(s.weightKg>0&&ex&&ex.isBodyweight?'+':'')+fmtW(s.weightKg)+' kg'} × ${s.reps}</span><span class="r">${s.note?esc(s.note)+' · ':''}tap to edit</span></div>`).join('')}</div>`}).join('')
+    return`<div class="group"><h4><b>${esc(ex?ex.name:'?')}</b><span class="num">${ss.map(s=>s.reps).join(' + ')} = ${totalReps} reps${best?' · e1RM '+best.toFixed(1):''}</span></h4>${ss.map(s=>`<div class="set" data-id="${s.id}"><span class="l num">${s.weightKg==null?'bw':(s.weightKg>0&&ex&&ex.isBodyweight?'+':'')+fmtW(s.weightKg)+' kg'} × ${s.reps}</span><span class="r">${s.note?esc(s.note)+' · ':''}tap to edit</span></div>`).join('')}</div>`}).join('')
     :`<div class="empty">Nothing logged today.<br><br>Type a lift like <code>incline bench 25 8 3</code></div>`;
   document.querySelectorAll('#today .set').forEach(el=>el.onclick=()=>editSet(el.dataset.id));
   renderChips();updatePreview();
@@ -321,14 +328,15 @@ function renderChips(){
   const namePart=fi<0?raw:raw.split(/\s+/).slice(0,fi).join(' ');
   const q=norm(namePart);
   let list=recentExercises();
+  if(currentEx&&!q)list=[currentEx,...list.filter(e=>e.id!==currentEx.id)];
   if(q)list=list.filter(e=>norm(e.name).includes(q)||(e.aliases||[]).some(a=>a.includes(q))||lev(norm(e.name),q)<=2);
-  const p=q?parse(raw):null;const onId=p&&p.ex?p.ex.id:null;
+  const p=raw.trim()?parse(raw):null;const onId=p&&p.ex?p.ex.id:(!q&&currentEx?currentEx.id:null);
   let html=list.slice(0,12).map(e=>`<button class="chip${e.id===onId?' on':''}" data-id="${e.id}">${esc(e.name)}</button>`).join('');
   if(p&&p.isNew&&p.type==='set')html+=`<button class="chip toggle" id="bwToggle">${p.isBodyweight?'bodyweight ✓':'weighted ✓'} · tap to switch</button>`;
   $('#chips').innerHTML=html;
   document.querySelectorAll('#chips .chip[data-id]').forEach(c=>{
     let timer;const ex=exById(c.dataset.id);
-    c.onclick=()=>{if(c.dataset.lp){delete c.dataset.lp;return}const inp=$('#in');const v=inp.value;const fi=v.split(/\s+/).findIndex(t=>/^[+-]?\d/.test(t));const numsPart=fi<0?'':' '+v.split(/\s+/).slice(fi).join(' ');inp.value=ex.name.toLowerCase()+(numsPart||' ');inp.focus();pendingBW=null;renderChips();updatePreview()};
+    c.onclick=()=>{if(c.dataset.lp){delete c.dataset.lp;return}const inp=$('#in');const v=inp.value;const fi=v.split(/\s+/).findIndex(t=>/^[+-]?\d/.test(t));const numsPart=fi<0?'':' '+v.split(/\s+/).slice(fi).join(' ');inp.value=ex.name.toLowerCase()+(numsPart||' ');inp.focus();pendingBW=null;setCurrent(ex);renderChips();updatePreview()};
     c.addEventListener('touchstart',()=>{timer=setTimeout(()=>{c.dataset.lp=1;openExercise(ex.id)},500)},{passive:true});
     c.addEventListener('touchend',()=>clearTimeout(timer));c.addEventListener('touchmove',()=>clearTimeout(timer));
   });
@@ -353,6 +361,7 @@ function updatePreview(){
     const w=p.isBodyweight?(p.weight?`+${fmtW(p.weight)} kg × `:'bw × '):`${fmtW(p.weight)} kg × `;
     const r=p.sets;const all=r.every(x=>x===r[0]);
     html+=`<b>${w}${all?`${r[0]} reps × ${r.length} set${r.length>1?'s':''}`:r.join(' / ')}</b>${p.relFrom!=null?` <span class="muted small">(${fmtW(p.relFrom)}${p.weight>=p.relFrom?' + ':' − '}${fmtW(Math.abs(p.weight-p.relFrom))})</span>`:''} · ${p.date===todayStr()?'Today':fmtDate(p.date)}`;
+    if(p.doneToday&&p.doneToday.length&&p.sets.length===1)html+=` · <span class="muted">set ${p.doneToday.length+1}</span>`;
     if(p.note)html+=` · <span class="muted">${esc(p.note)}</span>`;
     if(p.ex&&isPR(p.ex,p.weight,p.sets))html+=`<span class="pr">PR</span>`;
     btn.disabled=!!(p.cands&&p.cands.length>1);
@@ -371,7 +380,7 @@ function commit(){
   const existing=db.sets.filter(s=>s.exerciseId===ex.id&&s.date===p.date).length;
   const now=Date.now();
   p.sets.forEach((r,i)=>db.sets.push({id:uid(),exerciseId:ex.id,date:p.date,setIndex:existing+i,weightKg:p.isBodyweight?(p.weight||null):p.weight,reps:r,note:i===0?p.note:null,createdAt:now+i}));
-  save();pendingBW=null;$('#in').value='';
+  save();pendingBW=null;$('#in').value='';setCurrent(ex);$('#in').placeholder=`next set for ${ex.name.toLowerCase()} — just the number`;
   toast(pr?'Logged · PR 🔺':(p.isNew?'Created + logged':'Logged'));
   render();$('#in').focus();
   setTimeout(()=>{const m=$('main');m.scrollTop=m.scrollHeight},50);
@@ -481,6 +490,7 @@ $('#impFile').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{cons
 $('#wipe').onclick=()=>{if(!confirm('Delete everything? Export first if you want a backup.'))return;if(!confirm('Really delete all data?'))return;db={exercises:[],sets:[],bw:[],settings:{}};save();toast('Wiped');render()};
 
 /* --- boot --- */
+if(db.settings.currentExId&&db.settings.currentDate===todayStr()){currentEx=exById(db.settings.currentExId)||null;if(currentEx)$('#in').placeholder=`next set for ${currentEx.name.toLowerCase()} — just the number`}
 render();
 setTimeout(()=>$('#in').focus(),50);
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
